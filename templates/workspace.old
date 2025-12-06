@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{{ workspace.name }} | Workspace</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: "Segoe UI", Tahoma, sans-serif; margin: 0; padding: 24px; background: #f7f9fc; color: #111; }
+    h1 { margin: 0 0 16px 0; }
+    h2 { margin: 16px 0 8px 0; font-size: 18px; }
+    .nav { margin-bottom: 16px; }
+    .nav a { margin-right: 12px; text-decoration: none; color: #0a4ea1; font-weight: 600; }
+    .card { background: #fff; border: 1px solid #d5d8de; border-radius: 8px; padding: 16px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); margin-bottom: 16px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #e6e8ed; vertical-align: top; }
+    th { background: #f0f2f7; font-weight: 600; }
+    button { padding: 6px 10px; background: #006fd6; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+    .muted { color: #555; font-size: 14px; }
+    .bar-row { display: flex; align-items: center; gap: 8px; margin: 4px 0; }
+    .bar { height: 12px; border-radius: 6px; background: linear-gradient(90deg, #5aa9ff, #006fd6); }
+    .bar.alert { background: linear-gradient(90deg, #f9a825, #d84315); }
+    .chip { display: inline-block; padding: 2px 6px; border-radius: 4px; background: #e5f0ff; color: #0a4ea1; font-size: 12px; margin-left: 6px; }
+  </style>
+</head>
+<body>
+  <h1>{{ workspace.name }}</h1>
+  <div class="nav">
+    <a href="/">Dashboard</a>
+    <a href="/categorize">Categorize Workspaces</a>
+  </div>
+
+  <div class="card">
+    <div class="muted">Workspace ID: {{ workspace.id }}</div>
+  </div>
+
+  <div class="card">
+    <h2>Semantic models</h2>
+    {% if models %}
+      <table>
+        <thead>
+          <tr>
+            <th style="width: 26%">Name</th>
+            <th style="width: 14%">Created</th>
+            <th style="width: 14%">Configured By</th>
+            <th style="width: 16%">Storage Mode</th>
+            <th style="width: 30%">Refreshes (last 10)</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for m in models %}
+            {% set rlist = refreshes.get(m.id, []) %}
+            {% set durations = [r.duration_seconds for r in rlist if r.duration_seconds is not none] %}
+            {% set avg = (durations|sum / (durations|length)) if durations|length > 0 else 0 %}
+            <tr>
+              <td>{{ m.name }}</td>
+              <td>{{ m.createdDate or '—' }}</td>
+              <td>{{ m.configuredBy or '—' }}</td>
+              <td>{{ m.targetStorageMode or '—' }}</td>
+              <td>
+                <button onclick="fetchRefreshes('{{ workspace.id }}','{{ m.id }}')">Fetch last 10</button>
+                <div id="status-{{ m.id }}" class="muted"></div>
+                {% if rlist %}
+                  <div class="muted">Latest: {{ rlist[0].end_time or 'in-progress' }} ({{ (rlist[0].duration_seconds or 0) | round(2) }}s)</div>
+                  <div class="muted">Average: {{ avg|round(2) }}s</div>
+                  <div>
+                    {% set maxdur = durations|max if durations else 0 %}
+                    {% for r in rlist %}
+                      {% set dur = r.duration_seconds or 0 %}
+                      {% set alert = (avg > 0 and dur > avg * 1.1) %}
+                      <div class="bar-row">
+                        <div class="bar {% if alert %}alert{% endif %}" style="width: {{ (100 if maxdur == 0 else (dur / maxdur * 100)) }}%"></div>
+                        <span class="muted">{{ dur|round(2) }}s {{ r.status }} {% if alert %}<span class="chip">>10% avg</span>{% endif %}</span>
+                      </div>
+                    {% endfor %}
+                  </div>
+                {% else %}
+                  <div class="muted">No refresh history cached.</div>
+                {% endif %}
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    {% else %}
+      <p class="muted">No semantic models cached. Use "Fetch semantic models" from dashboard first.</p>
+    {% endif %}
+  </div>
+
+  <script>
+    async function fetchRefreshes(workspaceId, datasetId) {
+      const statusEl = document.getElementById(`status-${datasetId}`);
+      statusEl.textContent = 'Fetching refreshes...';
+      try {
+        const res = await fetch(`/fetch-refreshes/${workspaceId}/${datasetId}`, { method: 'POST' });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.message || 'Unable to fetch');
+        statusEl.textContent = 'Updated';
+        setTimeout(() => window.location.reload(), 500);
+      } catch (err) {
+        statusEl.textContent = err.message;
+      }
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,339 @@
+﻿{% extends "base.html" %}
+
+{% block title %}{{ workspace.name }} | Workspace{% endblock %}
+{% block header %}Power BI Dashboard{% endblock %}
+
+{% block content %}
+  <div class="d-flex justify-content-between align-items-center mb-2">
+    <div>
+      <h2 class="h4 mb-0">{{ workspace.name }}</h2>
+      <div class="text-muted small">Workspace ID: {{ workspace.id }}</div>
+    </div>
+    <div class="d-flex gap-2">
+      <button onclick="openScheduleWorkspace('{{ workspace.id }}')" class="btn btn-sm btn-outline-secondary">Schedule all</button>
+      <button onclick="fetchReports('{{ workspace.id }}')" class="btn btn-sm btn-secondary">Fetch reports</button>
+      <button onclick="refreshAll('{{ workspace.id }}')" class="btn btn-sm btn-outline-primary">Refresh all model history</button>
+    </div>
+  </div>
+  <div id="bulk-status" class="small mb-2"></div>
+
+  <div class="card">
+    <div class="card-body">
+      <h3 class="h5">Semantic models</h3>
+      {% if models %}
+        <div class="table-responsive">
+          <table class="table align-middle">
+            <thead class="table-light">
+              <tr>
+                <th>Semantic Model</th>
+                <th>Reports</th>
+                <th>Last refresh (local) / Duration</th>
+                <th>Refresh now</th>
+                <th>Schedule</th>
+                <th>History</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for m in models %}
+            {% set rlist = refreshes.get(m.model_id) or refreshes.get(m.id, []) %}
+            {% set reps = reports_by_model.get(m.model_id) or reports_by_model.get(m.id, []) %}
+            {% set sched = schedules.get(m.model_id) or schedules.get(m.id) %}
+                <tr>
+                  <td>{{ m.name }}<br><small class="text-muted"><em>{{ m.model_id }}</em></small></td>
+                  <td>
+                    {% if reps %}
+                      <div class="small">
+                        {% for rep in reps %}
+                          <div>{{ rep.name }}<br><small class="text-muted">{{ rep.id }}</small></div>
+                        {% endfor %}
+                      </div>
+                    {% else %}
+                      <span class="text-muted">None</span>
+                    {% endif %}
+                  </td>
+                  <td>
+                    {% if rlist %}
+                      <span class="ts" data-ts="{{ rlist[0].end_time or rlist[0].start_time }}">{{ rlist[0].end_time or 'in-progress' }}</span><br>
+                      {{ ((rlist[0].duration_seconds or 0)/60)|round(2) }} min<br>
+                      <span class="text-muted small">Avg interval: {{ (avg_interval_hours.get(m.model_id) or 0)|round(2) }} hrs</span>
+                    {% else %}
+                      <span class="text-muted">No data</span>
+                    {% endif %}
+                  </td>
+                  <td>
+                    <div class="d-flex flex-column gap-1">
+                      <button class="btn btn-sm btn-primary" onclick="triggerRefresh('{{ workspace.id }}','{{ m.model_id }}')">Refresh now</button>
+                      <div id="status-{{ m.model_id }}" class="small"></div>
+                    </div>
+                  </td>
+                  <td>
+                    <div class="d-flex flex-column gap-1">
+                      <button class="btn btn-sm btn-outline-secondary" onclick="openSchedule('{{ workspace.id }}','{{ m.model_id }}')">Schedule</button>
+                      {% if sched %}
+                        {% set val = sched.value or sched %}
+                        <small class="text-muted">
+                          {% if val.days %}{{ val.days|join(', ') }}{% else %}Daily{% endif %}<br>
+                          {{ (val.times or [])|join(', ') }} ({{ val.localTimeZoneId or 'UTC' }})
+                        </small>
+                      {% else %}
+                        <small class="text-muted">Not set</small>
+                      {% endif %}
+                    </div>
+                  </td>
+                  <td>
+                    <div class="d-flex flex-column gap-1">
+                      <button class="btn btn-sm btn-outline-primary" onclick="fetchRefreshes('{{ workspace.id }}','{{ m.model_id }}')">Fetch history</button>
+                      <a class="btn btn-sm btn-secondary" href="/workspace/{{ workspace.id }}/dataset/{{ m.model_id }}">View history</a>
+                    </div>
+                  </td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p class="text-muted mb-0">No semantic models cached. Use "Fetch semantic models" from dashboard first.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  <div class="modal fade" id="scheduleModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title">Refresh schedule</h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body">
+          <div id="schedule-status" class="small mb-2 text-muted"></div>
+          <form id="schedule-form">
+            <div class="mb-2">
+              <label class="form-label">Frequency</label>
+              <select class="form-select" name="frequency" id="sched-frequency">
+                <option value="Daily">Daily</option>
+                <option value="Weekly">Weekly</option>
+              </select>
+            </div>
+            <div class="mb-2" id="sched-days-wrapper">
+              <label class="form-label">Days (Weekly)</label>
+              <select class="form-select" name="days" id="sched-days" multiple>
+                <option>Sunday</option><option>Monday</option><option>Tuesday</option><option>Wednesday</option><option>Thursday</option><option>Friday</option><option>Saturday</option>
+              </select>
+              <div class="form-text">Hold Ctrl/Cmd to select multiple days.</div>
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Times (HH:MM, comma separated)</label>
+              <input type="text" class="form-control" name="time" id="sched-time" value="06:00,18:00">
+              <div class="form-text">Enter one or more times, separated by commas.</div>
+            </div>
+            <div class="mb-2">
+              <label class="form-label">Timezone</label>
+              <input type="text" class="form-control" name="tz" id="sched-tz" value="UTC">
+              <div class="form-text">Use IANA time zone, e.g., UTC or America/New_York.</div>
+            </div>
+          </form>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          <button type="button" class="btn btn-primary" onclick="saveSchedule()">Save schedule</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let schedWs = null;
+    let schedDs = null;
+    let schedAll = false;
+    let schedModal = null;
+
+    async function refreshAll(workspaceId) {
+      const bulk = document.getElementById('bulk-status');
+      bulk.textContent = 'Refreshing all model histories...';
+      bulk.style.color = '#0a4ea1';
+      try {
+        const rows = document.querySelectorAll('a[href^="/workspace/' + workspaceId + '/dataset/"]');
+        const failures = [];
+        let done = 0;
+        const total = rows.length;
+        for (const row of rows) {
+          const href = row.getAttribute('href');
+          const parts = href.split('/');
+          const ds = parts[parts.length - 1];
+          try {
+            bulk.textContent = `Refreshing ${++done}/${total}...`;
+            const res = await fetch(`/fetch-refreshes/${encodeURIComponent(workspaceId)}/${encodeURIComponent(ds)}`, { method: 'POST' });
+            const data = await res.json();
+            if (!data.ok) throw new Error(data.message || 'Failed updating ' + ds);
+          } catch (err) {
+            failures.push(ds);
+            continue;
+          }
+        }
+        if (failures.length) {
+          bulk.textContent = `Completed with failures: ${failures.join(', ')}`;
+          bulk.style.color = '#a12626';
+        } else {
+          bulk.textContent = 'All histories refreshed.';
+          bulk.style.color = '#0a5f1b';
+        }
+        setTimeout(() => window.location.reload(), 600);
+      } catch (err) {
+        bulk.textContent = err.message;
+        bulk.style.color = '#a12626';
+      }
+    }
+
+    async function fetchRefreshes(workspaceId, datasetId) {
+      const statusEl = document.getElementById(`status-${datasetId}`);
+      statusEl.textContent = 'Fetching refreshes...';
+      statusEl.style.color = '#0a4ea1';
+      try {
+        const res = await fetch(`/fetch-refreshes/${encodeURIComponent(workspaceId)}/${encodeURIComponent(datasetId)}`, { method: 'POST' });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.message || 'Unable to fetch refreshes');
+        statusEl.textContent = 'History updated';
+        statusEl.style.color = '#0a5f1b';
+        setTimeout(() => window.location.reload(), 500);
+      } catch (err) {
+        statusEl.textContent = err.message;
+        statusEl.style.color = '#a12626';
+      }
+    }
+
+    async function triggerRefresh(workspaceId, datasetId) {
+      const statusEl = document.getElementById(`status-${datasetId}`);
+      statusEl.textContent = 'Starting refresh...';
+      statusEl.style.color = '#0a4ea1';
+      try {
+        const res = await fetch(`/refresh-model/${encodeURIComponent(workspaceId)}/${encodeURIComponent(datasetId)}`, { method: 'POST' });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.message || 'Unable to trigger refresh');
+        statusEl.textContent = 'Refresh started';
+        statusEl.style.color = '#0a5f1b';
+      } catch (err) {
+        statusEl.textContent = err.message;
+        statusEl.style.color = '#a12626';
+      }
+    }
+
+    async function fetchReports(workspaceId) {
+      const bulk = document.getElementById('bulk-status');
+      bulk.textContent = 'Fetching reports...';
+      bulk.style.color = '#0a4ea1';
+      try {
+        const res = await fetch(`/fetch-reports/${encodeURIComponent(workspaceId)}`, { method: 'POST' });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.message || 'Unable to fetch reports');
+        bulk.textContent = 'Reports updated';
+        bulk.style.color = '#0a5f1b';
+        setTimeout(() => window.location.reload(), 500);
+      } catch (err) {
+        bulk.textContent = err.message;
+        bulk.style.color = '#a12626';
+      }
+    }
+
+    function initModal() {
+      if (!schedModal) {
+        const el = document.getElementById('scheduleModal');
+        schedModal = new bootstrap.Modal(el);
+      }
+    }
+
+    async function openSchedule(workspaceId, datasetId) {
+      initModal();
+      schedWs = workspaceId;
+      schedDs = datasetId;
+      schedAll = false;
+      document.getElementById('schedule-status').textContent = 'Loading current schedule...';
+      try {
+        const res = await fetch(`/schedule/${encodeURIComponent(workspaceId)}/${encodeURIComponent(datasetId)}`);
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.message || 'Unable to load schedule');
+        const sched = data.schedule.value || data.schedule;
+        if (sched.frequency) document.getElementById('sched-frequency').value = sched.frequency;
+        if (Array.isArray(sched.days)) {
+          const select = document.getElementById('sched-days');
+          Array.from(select.options).forEach(opt => opt.selected = sched.days.includes(opt.value));
+        }
+        if (Array.isArray(sched.times) && sched.times.length) {
+          document.getElementById('sched-time').value = sched.times.join(', ');
+        }
+        if (sched.localTimeZoneId) document.getElementById('sched-tz').value = sched.localTimeZoneId;
+        document.getElementById('schedule-status').textContent = '';
+      } catch (err) {
+        document.getElementById('schedule-status').textContent = err.message;
+      }
+      toggleDays();
+      schedModal.show();
+    }
+
+    async function openScheduleWorkspace(workspaceId) {
+      initModal();
+      schedWs = workspaceId;
+      schedDs = null;
+      schedAll = true;
+      document.getElementById('schedule-status').textContent = 'This will apply to all semantic models in the workspace.';
+      // leave existing values as-is
+      toggleDays();
+      schedModal.show();
+    }
+
+    function toggleDays() {
+      const freq = document.getElementById('sched-frequency').value;
+      document.getElementById('sched-days-wrapper').style.display = freq === 'Weekly' ? 'block' : 'none';
+    }
+    document.getElementById('sched-frequency').addEventListener('change', toggleDays);
+
+    async function saveSchedule() {
+      if (!schedWs || !schedDs) return;
+      const freq = document.getElementById('sched-frequency').value;
+      const timesRaw = document.getElementById('sched-time').value || '06:00';
+      const times = timesRaw.split(',').map(t => t.trim()).filter(Boolean);
+      const tz = document.getElementById('sched-tz').value || 'UTC';
+      const days = Array.from(document.getElementById('sched-days').selectedOptions).map(o => o.value);
+      const payload = { value: { times: times.length ? times : ["06:00"], localTimeZoneId: tz } };
+      if (freq === 'Weekly') {
+        payload.value.days = days.length ? days : ["Monday"];
+      }
+    const statusEl = document.getElementById('schedule-status');
+    statusEl.textContent = 'Saving...';
+      statusEl.classList.remove('text-danger');
+      try {
+        const url = schedAll
+          ? `/schedule-workspace/${encodeURIComponent(schedWs)}`
+          : `/schedule/${encodeURIComponent(schedWs)}/${encodeURIComponent(schedDs)}`;
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.message || 'Unable to save schedule');
+        statusEl.textContent = 'Saved';
+        statusEl.classList.remove('text-danger');
+        setTimeout(() => {
+          schedModal.hide();
+          window.location.reload();
+        }, 700);
+      } catch (err) {
+        statusEl.textContent = err.message;
+        statusEl.classList.add('text-danger');
+      }
+    }
+
+    (function formatTimestamps() {
+      const formatLocal = (iso) => {
+        if (!iso) return '-';
+        const d = new Date(iso);
+        if (isNaN(d)) return iso;
+        return d.toLocaleString();
+      };
+      document.querySelectorAll('.ts').forEach(el => {
+        const raw = el.getAttribute('data-ts');
+        el.textContent = formatLocal(raw);
+      });
+    })();
+  </script>
+{% endblock %}

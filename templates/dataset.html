@@ -1,0 +1,141 @@
+﻿{% extends "base.html" %}
+
+{% block title %}Dataset Refreshes{% endblock %}
+{% block header %}Dataset Refreshes{% endblock %}
+
+{% block content %}
+  <div class="alert alert-secondary d-flex justify-content-between align-items-center">
+    <div>
+      <div class="fw-semibold mb-1">Refresh History</div>
+      {% if workspace %}
+        <div class="small">Workspace: <strong>{{ workspace.name }}</strong> ({{ workspace.id }})</div>
+      {% else %}
+        <div class="small text-muted">Workspace info unavailable.</div>
+      {% endif %}
+      {% if dataset %}
+        <div class="small">Dataset: <strong>{{ dataset.name }}</strong> ({{ dataset.model_id or dataset_id }})</div>
+      {% else %}
+        <div class="small">Dataset ID: {{ dataset_id }}</div>
+      {% endif %}
+    </div>
+    <a class="btn btn-sm btn-primary" href="?refresh=1">Refresh &amp; reload</a>
+  </div>
+
+  {% if error %}
+    <div class="alert alert-warning">{{ error }}</div>
+  {% endif %}
+
+  {% if refreshes %}
+  <div class="card mb-3">
+    <div class="card-body">
+      <h2 class="h5">Trend</h2>
+      <canvas id="chart" height="120"></canvas>
+    </div>
+  </div>
+  {% endif %}
+
+  <div class="card">
+      <div class="card-body">
+        <h2 class="h5">Refresh history (last {{ refreshes|length }} fetched)</h2>
+        {% if refreshes %}
+          <div class="table-responsive">
+          <table class="table align-middle table-hover" id="history-table">
+            <thead class="table-light">
+              <tr>
+                <th data-col="start_time">Start</th>
+                <th data-col="end_time">End</th>
+                <th data-col="status">Status</th>
+                <th data-col="duration">Duration (min)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for r in refreshes %}
+                <tr>
+                  <td><span class="ts" data-ts="{{ r.start_time or '' }}">{{ r.start_time or '-' }}</span></td>
+                  <td><span class="ts" data-ts="{{ r.end_time or '' }}">{{ r.end_time or '-' }}</span></td>
+                  <td class="{% if (r.status or '')|lower != 'completed' %}text-danger{% endif %}">{{ r.status or '-' }}</td>
+                  <td>{{ ((r.duration_seconds or 0) / 60)|round(2) }}</td>
+                </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      {% else %}
+        <p class="text-muted mb-0">No refresh history cached.</p>
+      {% endif %}
+    </div>
+  </div>
+
+  {% if refreshes %}
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script>
+    (function() {
+      const data = {{ refreshes | tojson }};
+      const fmt = (ts) => {
+        if (!ts) return '';
+        const d = new Date(ts);
+        return isNaN(d) ? ts : d.toLocaleString();
+      };
+      const labels = data.map(r => fmt(r.end_time || r.start_time || '')).reverse();
+      const durations = data.map(r => (r.duration_seconds || 0) / 60).reverse();
+      const ctx = document.getElementById('chart').getContext('2d');
+      new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels,
+          datasets: [{
+            label: 'Duration (min)',
+            data: durations,
+            fill: false,
+            borderColor: '#0a4ea1',
+            backgroundColor: '#0a4ea1',
+            tension: 0.2,
+          }]
+        },
+        options: {
+          plugins: { legend: { display: false } },
+          scales: {
+            x: { ticks: { autoSkip: true, maxTicksLimit: 10 } },
+            y: { beginAtZero: true }
+          }
+        }
+      });
+    })();
+    (function() {
+      const formatLocal = (iso) => {
+        if (!iso) return '-';
+        const d = new Date(iso);
+        if (isNaN(d)) return iso;
+        return d.toLocaleString();
+      };
+      document.querySelectorAll('.ts').forEach(el => {
+        const raw = el.getAttribute('data-ts');
+        el.textContent = formatLocal(raw);
+      });
+    })();
+    // simple sortable tables
+    function setupSortable(tableId) {
+      const table = document.getElementById(tableId);
+      if (!table) return;
+      const tbody = table.querySelector('tbody');
+      table.querySelectorAll('th').forEach((th, idx) => {
+        th.style.cursor = 'pointer';
+        th.addEventListener('click', () => {
+          const rows = Array.from(tbody.querySelectorAll('tr'));
+          const asc = th.dataset.order !== 'asc';
+          rows.sort((a, b) => {
+            const av = a.children[idx].innerText.trim();
+            const bv = b.children[idx].innerText.trim();
+            const an = parseFloat(av.replace(/[^0-9.-]/g,'')); const bn = parseFloat(bv.replace(/[^0-9.-]/g,''));
+            if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
+            return asc ? av.localeCompare(bv) : bv.localeCompare(av);
+          });
+          th.dataset.order = asc ? 'asc' : 'desc';
+          rows.forEach(r => tbody.appendChild(r));
+        });
+      });
+    }
+    setupSortable('history-table');
+  </script>
+  {% endif %}
+{% endblock %}

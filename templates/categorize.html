@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+
+{% block title %}Categorize Workspaces{% endblock %}
+{% block header %}Categorize Workspaces{% endblock %}
+
+{% block content %}
+  <div class="mb-2 text-muted">Only uncategorized workspaces are shown. Use search to filter.</div>
+
+  <div class="mb-3">
+    <label for="search" class="form-label">Search</label>
+    <input id="search" type="text" class="form-control" placeholder="Filter by workspace name" oninput="filterTable()">
+  </div>
+
+  {% if error %}
+    <div class="alert alert-warning">{{ error }}</div>
+  {% endif %}
+
+  {% if workspaces|length == 0 and not error %}
+    <p class="text-muted">All workspaces are categorized.</p>
+  {% endif %}
+
+  {% if workspaces|length > 0 %}
+  <div class="d-flex justify-content-end gap-2 mb-2">
+    <button class="btn btn-sm btn-success" onclick="saveAll()">Save changed</button>
+  </div>
+  <table class="table table-hover" id="workspace-table">
+    <thead class="table-light">
+      <tr>
+        <th>Name</th>
+        <th>Type</th>
+        <th>Environment</th>
+        <th>Module name</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for ws in workspaces %}
+        <tr data-id="{{ ws.id }}">
+        <td data-name="{{ ws.name | lower }}">{{ ws.name }}</td>
+        <td>{{ ws.type }}</td>
+        <td>
+          <select id="env-{{ ws.id }}" class="form-select form-select-sm" data-initial="{{ categories.get(ws.id, {}).env if categories.get(ws.id) }}">
+            {% for env in ['dev','uat','prod'] %}
+              <option value="{{ env }}" {% if categories.get(ws.id, {}).env == env %}selected{% endif %}>{{ env|upper }}</option>
+            {% endfor %}
+          </select>
+        </td>
+        <td>
+          <input id="module-{{ ws.id }}" class="form-control form-control-sm" type="text" placeholder="module name" list="module-options" value="{{ categories.get(ws.id, {}).module or '' }}" data-initial="{{ categories.get(ws.id, {}).module or '' }}">
+        </td>
+        <td>
+          <button class="btn btn-sm btn-primary" onclick="saveCategory('{{ ws.id }}')">Save</button>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  <div class="d-flex justify-content-end gap-2 mb-2">
+    <button class="btn btn-sm btn-success" onclick="saveAll()">Save changed</button>
+  </div>
+  {% endif %}
+
+  <datalist id="module-options">
+    {% for m in modules %}
+      <option value="{{ m }}">
+    {% endfor %}
+  </datalist>
+
+  <div class="small mt-2" id="status"></div>
+
+  <script>
+    function setStatus(message, isError) {
+      const el = document.getElementById('status');
+      el.textContent = message || '';
+      el.style.color = isError ? '#a12626' : '#0a5f1b';
+    }
+
+    async function saveCategory(id) {
+      const env = document.getElementById(`env-${id}`).value;
+      const module = document.getElementById(`module-${id}`).value;
+      setStatus('Saving...', false);
+      try {
+        const res = await fetch('/categorize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, env, module })
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.message || 'Unable to save');
+        setStatus('Saved', false);
+        setTimeout(() => window.location.reload(), 400);
+      } catch (err) {
+        setStatus(err.message, true);
+      }
+    }
+
+    function filterTable() {
+      const term = (document.getElementById('search').value || '').toLowerCase();
+      const rows = document.querySelectorAll('#workspace-table tbody tr');
+      rows.forEach(row => {
+        const nameCell = row.querySelector('[data-name]');
+        const match = !term || (nameCell && nameCell.getAttribute('data-name').includes(term));
+        row.style.display = match ? '' : 'none';
+      });
+    }
+
+    async function saveAll() {
+      const rows = document.querySelectorAll('#workspace-table tbody tr');
+      const items = [];
+      rows.forEach(row => {
+        const id = row.querySelector('select').id.replace('env-','');
+        const env = row.querySelector('select').value;
+        const module = row.querySelector('input').value;
+        const envInitial = row.querySelector('select').dataset.initial || '';
+        const moduleInitial = row.querySelector('input').dataset.initial || '';
+        if (env !== envInitial || module !== moduleInitial) {
+          items.push({ id, env, module });
+        }
+      });
+      if (items.length === 0) {
+        setStatus('No changes to save', false);
+        return;
+      }
+      setStatus('Saving all...', false);
+      try {
+        const res = await fetch('/categorize/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ items })
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.message || 'Unable to save all');
+        setStatus('All saved', false);
+        setTimeout(() => window.location.reload(), 400);
+      } catch (err) {
+        setStatus(err.message, true);
+      }
+    }
+  </script>
+{% endblock %}

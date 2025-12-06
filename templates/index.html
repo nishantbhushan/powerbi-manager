@@ -1,0 +1,150 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Power BI Workspace Catalog</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <style>
+    body { font-family: "Segoe UI", Tahoma, sans-serif; margin: 0; padding: 24px; background: #f7f9fc; color: #111; }
+    h1 { margin: 0 0 16px 0; }
+    h2 { margin: 0 0 12px 0; font-size: 18px; }
+    .card { background: #fff; border: 1px solid #d5d8de; border-radius: 8px; padding: 16px; box-shadow: 0 2px 6px rgba(0,0,0,0.05); margin-bottom: 16px; }
+    table { width: 100%; border-collapse: collapse; margin-top: 12px; }
+    th, td { text-align: left; padding: 8px; border-bottom: 1px solid #e6e8ed; }
+    th { background: #f0f2f7; font-weight: 600; }
+    select, input[type="text"] { width: 100%; box-sizing: border-box; padding: 6px 8px; border: 1px solid #c6cad3; border-radius: 4px; }
+    button { padding: 6px 10px; background: #006fd6; color: #fff; border: none; border-radius: 4px; cursor: pointer; }
+    button:disabled { background: #9bb9e6; cursor: not-allowed; }
+    .status { margin-top: 8px; font-size: 14px; }
+    .error { background: #ffecec; border: 1px solid #f3b0b0; color: #a12626; padding: 10px; border-radius: 4px; margin-top: 12px; }
+    .muted { color: #555; font-size: 14px; }
+    .search-row { display: flex; gap: 12px; align-items: center; margin-top: 8px; }
+    .tree { margin: 0; padding-left: 16px; }
+    .tree > li { margin-bottom: 6px; }
+    .tag { display: inline-block; padding: 2px 6px; border-radius: 4px; background: #e5f0ff; color: #0a4ea1; font-size: 12px; margin-left: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Power BI Workspace Catalog</h1>
+
+  <div class="card">
+    <h2>Categorized summary</h2>
+    {% if summary %}
+      <ul class="tree">
+        {% for module, envs in summary.items() %}
+          <li><strong>{{ module }}</strong>
+            <ul class="tree">
+              {% for env, names in envs.items() %}
+                <li>{{ env|upper }}
+                  <ul class="tree">
+                    {% for name in names %}
+                      <li>{{ name }}</li>
+                    {% endfor %}
+                  </ul>
+                </li>
+              {% endfor %}
+            </ul>
+          </li>
+        {% endfor %}
+      </ul>
+    {% else %}
+      <p class="muted">No categorized workspaces yet.</p>
+    {% endif %}
+  </div>
+
+  <div class="card">
+    <p class="muted">Sign in with the device code shown in the terminal when the page loads. Data is cached in-memory for {{ CACHE_SECONDS }} seconds and categories are stored in SQLite at runtime.</p>
+
+    <div class="search-row">
+      <label for="search" style="min-width: 80px;">Search:</label>
+      <input id="search" type="text" placeholder="Filter by workspace name" oninput="filterTable()">
+    </div>
+
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+
+    {% if workspaces|length == 0 and not error %}
+      <p class="muted">No workspaces found.</p>
+    {% endif %}
+
+    {% if workspaces|length > 0 %}
+    <table id="workspace-table">
+      <thead>
+        <tr>
+          <th style="width: 26%">Name</th>
+          <th style="width: 18%">Type</th>
+          <th style="width: 12%">Capacity</th>
+          <th style="width: 14%">Environment</th>
+          <th style="width: 20%">Module name</th>
+          <th style="width: 10%"></th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ws in workspaces %}
+        {% set cid = ws.id %}
+        {% set current = categories.get(ws.id, {}) %}
+        <tr>
+          <td data-name="{{ ws.name | lower }}">{{ ws.name }}</td>
+          <td>{{ ws.type }}</td>
+          <td>{{ 'Yes' if ws.isOnDedicatedCapacity else 'No' }}</td>
+          <td>
+            <select id="env-{{ cid }}">
+              {% for env in ['dev','uat','prod'] %}
+                <option value="{{ env }}" {% if current.env == env %}selected{% endif %}>{{ env|upper }}</option>
+              {% endfor %}
+            </select>
+          </td>
+          <td>
+            <input id="module-{{ cid }}" type="text" placeholder="module name" value="{{ current.module or '' }}">
+          </td>
+          <td>
+            <button onclick="saveCategory('{{ cid }}')">Save</button>
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+
+    <div class="status" id="status"></div>
+  </div>
+
+  <script>
+    function setStatus(message, isError) {
+      const el = document.getElementById('status');
+      el.textContent = message || '';
+      el.style.color = isError ? '#a12626' : '#0a5f1b';
+    }
+
+    async function saveCategory(id) {
+      const env = document.getElementById(`env-${id}`).value;
+      const module = document.getElementById(`module-${id}`).value;
+      setStatus('Saving...', false);
+      try {
+        const res = await fetch('/categorize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ id, env, module })
+        });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.message || 'Unable to save');
+        setStatus(`Saved ${env.toUpperCase()}${module ? ' / ' + module : ''}`, false);
+        setTimeout(() => window.location.reload(), 400);
+      } catch (err) {
+        setStatus(err.message, true);
+      }
+    }
+
+    function filterTable() {
+      const term = (document.getElementById('search').value || '').toLowerCase();
+      const rows = document.querySelectorAll('#workspace-table tbody tr');
+      rows.forEach(row => {
+        const nameCell = row.querySelector('[data-name]');
+        const match = !term || (nameCell && nameCell.getAttribute('data-name').includes(term));
+        row.style.display = match ? '' : 'none';
+      });
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,78 @@
+{% extends "base.html" %}
+
+{% block title %}Power BI Dashboard{% endblock %}
+{% block header %}Power BI Dashboard{% endblock %}
+
+{% block content %}
+  {% if error %}
+    <div class="alert alert-warning">{{ error }}</div>
+  {% endif %}
+
+  <h2 class="h4 mb-3">Workspace Dashboard</h2>
+  {% if categories %}
+    {% for module, envs in summary|dictsort %}
+      {% set collapse_id = 'module-' ~ loop.index %}
+      <div class="card mb-3">
+        <div class="card-body p-0">
+          <button class="btn w-100 text-start px-3 py-2 d-flex justify-content-between align-items-center border-0 bg-white" type="button" data-bs-toggle="collapse" data-bs-target="#{{ collapse_id }}" aria-expanded="false">
+            <strong>{{ module }}</strong>
+            <span class="text-muted small">Click to expand</span>
+          </button>
+          <div class="collapse px-3 pb-3" id="{{ collapse_id }}">
+            <div class="cat-tiles">
+              {% for env, wss in envs.items() %}
+                {% for ws in wss %}
+                  {% set stats = ws_stats.get(ws.id, {}) %}
+                  {% set badge_class = 'text-bg-secondary' %}
+                  {% if env|lower == 'prod' %}{% set badge_class = 'text-bg-danger' %}{% elif env|lower == 'uat' %}{% set badge_class = 'text-bg-warning' %}{% endif %}
+                  <div class="card" style="min-width: 230px;">
+                    <div class="card-body">
+                      <div class="d-flex justify-content-between align-items-center">
+                        <div>
+                          <a href="/workspace/{{ ws.id }}" class="fw-semibold text-decoration-none">{{ ws.name }}</a>
+                          <div class="text-muted small">Models: {{ stats.model_count or 0 }}</div>
+                        </div>
+                        <span class="badge {{ badge_class }}">{{ env|upper }}</span>
+                      </div>
+                      <div class="d-flex justify-content-between text-center mt-2 mb-2">
+                        <div><div class="fw-semibold">{{ stats.model_count or 0 }}</div><div class="text-muted small">Models</div></div>
+                        <div><div class="fw-semibold">{{ stats.failed_count or 0 }}</div><div class="text-muted small">Failed</div></div>
+                        <div><div class="fw-semibold">{{ stats.slow_count or 0 }}</div><div class="text-muted small">Slow</div></div>
+                      </div>
+                      <button class="btn btn-sm btn-outline-primary w-100" onclick="fetchModels('{{ ws.id }}')">Fetch semantic models</button>
+                      <div id="status-{{ ws.id }}" class="small mt-1"></div>
+                    </div>
+                  </div>
+                {% endfor %}
+              {% endfor %}
+            </div>
+          </div>
+        </div>
+      </div>
+    {% endfor %}
+  {% else %}
+    <p class="text-muted">No categorized workspaces yet.</p>
+  {% endif %}
+
+  <script>
+    async function fetchModels(workspaceId) {
+      const statusEl = document.getElementById(`status-${workspaceId}`);
+      statusEl.textContent = 'Fetching models...';
+      statusEl.classList.remove('text-danger','text-success');
+      statusEl.classList.add('text-primary');
+      try {
+        const res = await fetch(`/fetch-models/${workspaceId}`, { method: 'POST' });
+        const data = await res.json();
+        if (!data.ok) throw new Error(data.message || 'Unable to fetch models');
+        statusEl.textContent = 'Updated';
+        statusEl.classList.remove('text-primary');
+        statusEl.classList.add('text-success');
+        setTimeout(() => window.location.reload(), 500);
+      } catch (err) {
+        statusEl.textContent = err.message;
+        statusEl.classList.remove('text-primary');
+        statusEl.classList.add('text-danger');
+      }
+    }
+  </script>
+{% endblock %}

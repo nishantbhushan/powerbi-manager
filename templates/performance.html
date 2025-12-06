@@ -1,0 +1,444 @@
+﻿{% extends "base.html" %}
+
+{% block title %}Performance Analyzer{% endblock %}
+{% block header %}Performance Analyzer{% endblock %}
+
+{% block content %}
+  {% if error %}
+    <div class="alert alert-warning">{{ error }}</div>
+  {% endif %}
+
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div class="btn-group" role="group">
+      <button class="btn btn-outline-primary btn-sm" onclick="switchTab('24h')">Last 24h</button>
+      <button class="btn btn-outline-primary btn-sm" onclick="switchTab('7d')">Last 7d</button>
+      <button class="btn btn-outline-primary btn-sm" onclick="switchTab('all')">All</button>
+    </div>
+    <div class="d-flex align-items-center gap-2">
+      <div class="input-group input-group-sm" style="width: 180px;">
+        <label class="input-group-text" for="envSelect">Env</label>
+        <select id="envSelect" class="form-select form-select-sm" onchange="switchEnv(this.value)">
+          <option value="all" selected>All</option>
+          <option value="DEV">DEV</option>
+          <option value="UAT">UAT</option>
+          <option value="PROD">PROD</option>
+        </select>
+      </div>
+      <button class="btn btn-sm btn-success" onclick="fetchAllHistories()">Fetch history for all models</button>
+      <span id="bulk-status" class="small text-muted ms-2"></span>
+    </div>
+  </div>
+
+  <div class="row g-3 mb-3" id="summary"></div>
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <h5 class="card-title">Top Slow (avg duration, minutes)</h5>
+      <canvas id="chart-slow" height="140"></canvas>
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <h5 class="card-title">Top Failures</h5>
+      <canvas id="chart-fail" height="140"></canvas>
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <h5 class="card-title">All Models Performance</h5>
+      <canvas id="chart-all" height="200"></canvas>
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <h5 class="card-title">Last 24 Refreshes (per model)</h5>
+      <div class="mb-3">
+        <div class="fw-semibold small mb-1">PROD</div>
+        <div id="history-empty-prod" class="text-muted small mb-1" style="display:none;">No prod refreshes in last 24h.</div>
+        <canvas id="chart-history-prod" height="160"></canvas>
+        <div id="history-legend-prod" class="mt-1"></div>
+      </div>
+      <div class="mb-3">
+        <div class="fw-semibold small mb-1">UAT</div>
+        <div id="history-empty-uat" class="text-muted small mb-1" style="display:none;">No uat refreshes in last 24h.</div>
+        <canvas id="chart-history-uat" height="160"></canvas>
+        <div id="history-legend-uat" class="mt-1"></div>
+      </div>
+      <div class="mb-3">
+        <div class="fw-semibold small mb-1">DEV</div>
+        <div id="history-empty-dev" class="text-muted small mb-1" style="display:none;">No dev refreshes in last 24h.</div>
+        <canvas id="chart-history-dev" height="160"></canvas>
+        <div id="history-legend-dev" class="mt-1"></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card mb-3">
+    <div class="card-body">
+      <div class="d-flex justify-content-between align-items-center">
+        <h5 class="card-title mb-0">Capacity CU (estimated)</h5>
+        <small class="text-muted">Source: Log Analytics or manual ingest</small>
+      </div>
+      <div id="capacity-empty" class="text-muted small mt-2" style="display: none;">No capacity metrics available yet.</div>
+      <canvas id="chart-capacity" height="180"></canvas>
+    </div>
+  </div>
+
+      <div class="card">
+        <div class="card-body">
+          <h5 class="card-title">All Models</h5>
+          <div class="table-responsive">
+        <table class="table table-sm align-middle table-hover" id="table-models">
+          <thead class="table-light">
+            <tr>
+              <th>Model</th>
+          <th>Workspace</th>
+          <th>Env</th>
+          <th>Module</th>
+              <th data-col="avg">Avg (min)</th>
+              <th data-col="last">Last (min)</th>
+              <th data-col="fail">Failures</th>
+              <th data-col="total">Total</th>
+              <th data-col="freq">Avg interval (hrs)</th>
+              <th>Status</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
+  <script>
+    const perf = {{ perf | tojson }};
+    let current = '24h';
+    let currentEnv = 'all';
+    let slowChart = null;
+    let failChart = null;
+    let allChart = null;
+    let historyCharts = {};
+    let capacityChart = null;
+
+    function switchTab(key) {
+      current = key;
+      renderSummary();
+      renderCharts();
+      renderTable();
+    }
+
+    function switchEnv(env) {
+      currentEnv = env;
+      renderSummary();
+      renderCharts();
+      renderTable();
+    }
+
+    function filteredSet() {
+      const base = perf[current];
+      const filteredModels = base.models.filter(m => currentEnv === 'all' || m.env === currentEnv);
+      const topSlow = filteredModels.filter(m => m.avg_sec > 0).sort((a, b) => b.avg_sec - a.avg_sec).slice(0, 10);
+      const topFail = filteredModels.filter(m => m.failures > 0).sort((a, b) => b.failures - a.failures).slice(0, 10);
+      const efficient = filteredModels.filter(m => m.efficient);
+      const outliers = filteredModels.filter(m => m.outlier);
+      const history = (base.history24 || []).filter(h => currentEnv === 'all' || h.env === currentEnv);
+      return {
+        models: filteredModels,
+        top_slow: topSlow,
+        top_fail: topFail,
+        efficient,
+        outliers,
+        history24: history,
+        capacity: base.capacity || []
+      };
+    }
+
+    function renderSummary() {
+      const container = document.getElementById('summary');
+      const set = filteredSet();
+      container.innerHTML = '';
+      const cards = [
+        { label: 'Models tracked', value: set.models.length },
+        { label: 'Efficient (<=5 min, no failures)', value: set.efficient.length },
+        { label: 'Outliers (last > 110% avg)', value: set.outliers.length },
+        { label: 'Models with failures', value: set.top_fail.length },
+      ];
+      cards.forEach(c => {
+        const col = document.createElement('div');
+        col.className = 'col-6 col-md-3';
+        col.innerHTML = `<div class="card h-100"><div class="card-body text-center"><div class="fw-bold fs-5">${c.value}</div><div class="text-muted small">${c.label}</div></div></div>`;
+        container.appendChild(col);
+      });
+    }
+
+    function renderCharts() {
+      const set = filteredSet();
+      const baseHistory = perf[current]?.history24 || [];
+      const slowCtx = document.getElementById('chart-slow').getContext('2d');
+      const failCtx = document.getElementById('chart-fail').getContext('2d');
+      const allCtx = document.getElementById('chart-all').getContext('2d');
+      if (slowChart) slowChart.destroy();
+      if (failChart) failChart.destroy();
+      if (allChart) allChart.destroy();
+      Object.values(historyCharts).forEach(c => c && c.destroy());
+      historyCharts = {};
+      if (capacityChart) capacityChart.destroy();
+      slowChart = new Chart(slowCtx, {
+        type: 'bar',
+        data: {
+          labels: set.top_slow.map(i => `${i.model_name} (${i.workspace_name})`),
+          datasets: [{
+            label: 'Avg duration (min)',
+            data: set.top_slow.map(i => (i.avg_sec || 0) / 60),
+            backgroundColor: '#0a4ea1'
+          }]
+        },
+        options: { plugins: { legend: { display: false } }, indexAxis: 'y', scales: { x: { beginAtZero: true } } }
+      });
+      failChart = new Chart(failCtx, {
+        type: 'bar',
+        data: {
+          labels: set.top_fail.map(i => `${i.model_name} (${i.workspace_name})`),
+          datasets: [{
+            label: 'Failures',
+            data: set.top_fail.map(i => i.failures),
+            backgroundColor: '#d64545'
+          }]
+        },
+        options: { plugins: { legend: { display: false } }, indexAxis: 'y', scales: { x: { beginAtZero: true } } }
+      });
+      const modelsSorted = [...set.models].sort((a, b) => (b.avg_sec || 0) - (a.avg_sec || 0));
+      allChart = new Chart(allCtx, {
+        type: 'bar',
+        data: {
+          labels: modelsSorted.map(i => `${i.model_name} (${i.workspace_name})`),
+          datasets: [{
+            label: 'Avg duration (min)',
+            data: modelsSorted.map(i => (i.avg_sec || 0) / 60),
+            backgroundColor: '#4f46e5'
+          }]
+        },
+        options: {
+          plugins: { legend: { display: false } },
+          scales: { y: { beginAtZero: true } }
+        }
+      });
+
+      renderHistoryByEnv(baseHistory);
+
+      const capCanvas = document.getElementById('chart-capacity');
+      const capEmpty = document.getElementById('capacity-empty');
+      const capSeries = set.capacity || [];
+      if (!capSeries.length) {
+        if (capCanvas) capCanvas.style.display = 'none';
+        if (capEmpty) capEmpty.style.display = 'block';
+      } else {
+        if (capCanvas) capCanvas.style.display = 'block';
+        if (capEmpty) capEmpty.style.display = 'none';
+        capacityChart = new Chart(capCanvas.getContext('2d'), {
+          type: 'line',
+          data: {
+            datasets: [{
+              label: 'CU (capacity-level)',
+              data: capSeries.map(pt => ({ x: new Date(pt.x), y: pt.y })),
+              fill: false,
+              tension: 0.2,
+              borderColor: '#0a4ea1',
+              backgroundColor: '#0a4ea1'
+            }]
+          },
+          options: {
+            parsing: false,
+            plugins: { legend: { display: true, position: 'bottom' } },
+            scales: {
+              x: {
+                type: 'time',
+                time: { tooltipFormat: 'PPpp' },
+                title: { display: true, text: 'Time (local)' }
+              },
+              y: {
+                beginAtZero: true,
+                title: { display: true, text: 'CU (capacity)' }
+              }
+            }
+          }
+        });
+      }
+    }
+
+    function renderHistoryByEnv(historyData) {
+      if (!Array.isArray(historyData)) return;
+      const envMap = {
+        PROD: { canvas: 'chart-history-prod', empty: 'history-empty-prod', legend: 'history-legend-prod' },
+        UAT: { canvas: 'chart-history-uat', empty: 'history-empty-uat', legend: 'history-legend-uat' },
+        DEV: { canvas: 'chart-history-dev', empty: 'history-empty-dev', legend: 'history-legend-dev' }
+      };
+      Object.values(historyCharts).forEach(c => c && c.destroy());
+      historyCharts = {};
+      const now = Date.now();
+      const min = now - 24 * 60 * 60 * 1000;
+
+      Object.entries(envMap).forEach(([envKey, ids]) => {
+        const subset = historyData.filter(h => {
+          const e = (h.env || '').toUpperCase();
+          const norm = ['PROD','UAT','DEV'].includes(e) ? e : 'DEV';
+          return norm === envKey;
+        });
+        const datasets = subset.map((d, idx) => ({
+          label: d.label,
+          data: (d.data || []).map(pt => ({ x: new Date(pt.x), y: pt.y })),
+          backgroundColor: `hsl(${(idx * 60) % 360}, 70%, 60%)`,
+          borderColor: `hsl(${(idx * 60) % 360}, 70%, 45%)`,
+          borderWidth: 1
+        }));
+        const allPoints = datasets.flatMap(ds => ds.data || []);
+        const hasPoints = allPoints.length > 0;
+        const points24 = allPoints.filter(p => {
+          const t = new Date(p.x).getTime();
+          return t >= min && t <= now;
+        });
+        const canvas = document.getElementById(ids.canvas);
+        const empty = document.getElementById(ids.empty);
+        const legend = document.getElementById(ids.legend);
+        if (!hasPoints) {
+          if (canvas) canvas.style.display = 'none';
+          if (empty) empty.style.display = 'block';
+          if (legend) legend.innerHTML = '';
+          return;
+        }
+        if (canvas) canvas.style.display = 'block';
+        if (empty) empty.style.display = 'none';
+        // Choose window: prefer last 24h if data exists, else span available data
+        let xMin = min;
+        let xMax = now;
+        if (points24.length === 0 && allPoints.length > 0) {
+          const times = allPoints.map(p => new Date(p.x).getTime());
+          xMin = Math.min(...times);
+          xMax = Math.max(...times);
+          if (empty) empty.textContent = 'No refreshes in last 24h. Showing oldest available.';
+        } else if (empty) {
+          empty.textContent = `No ${envKey.toLowerCase()} refreshes in last 24h.`;
+        }
+
+        historyCharts[envKey] = new Chart(canvas.getContext('2d'), {
+          type: 'bar',
+          data: { datasets },
+          options: {
+            parsing: false,
+            plugins: { legend: { display: false } },
+            scales: {
+              x: {
+                type: 'time',
+                time: { tooltipFormat: 'PPpp' },
+                title: { display: true, text: 'Refresh start (local)' },
+                min: xMin,
+                max: xMax
+              },
+              y: {
+                beginAtZero: true,
+                title: { display: true, text: 'Duration (min)' }
+              }
+            }
+          }
+        });
+        renderHistoryLegend(subset, datasets, legend);
+      });
+    }
+
+    function renderTable() {
+      const tbody = document.querySelector('#table-models tbody');
+      tbody.innerHTML = '';
+      filteredSet().models.forEach(m => {
+        const tr = document.createElement('tr');
+        tr.innerHTML = `
+          <td><a href="/workspace/${m.workspace_id}/dataset/${m.model_id}" class="text-decoration-none">${m.model_name}</a><br><small class="text-muted"><em>${m.model_id}</em></small><br><span class="text-muted">${m.workspace_name}</span></td>
+          <td>${m.workspace_name}</td>
+          <td>${m.env}</td>
+          <td>${m.module}</td>
+          <td data-sort="${m.avg_sec}">${(m.avg_sec/60).toFixed(2)}</td>
+          <td data-sort="${m.last_sec}">${(m.last_sec/60).toFixed(2)}</td>
+          <td data-sort="${m.failures}">${m.failures}</td>
+          <td data-sort="${m.total}">${m.total}</td>
+          <td data-sort="${m.avg_interval_hours}">${m.avg_interval_hours.toFixed(2)}</td>
+          <td class="${(m.last_status || '').toLowerCase() !== 'completed' ? 'text-danger' : ''}">${m.last_status || '-'}</td>
+        `;
+        tbody.appendChild(tr);
+      });
+      setupSortable('table-models');
+    }
+
+    function setupSortable(tableId) {
+      const table = document.getElementById(tableId);
+      if (!table) return;
+      const tbody = table.querySelector('tbody');
+      table.querySelectorAll('th').forEach((th, idx) => {
+        th.style.cursor = 'pointer';
+        th.addEventListener('click', () => {
+          const rows = Array.from(tbody.querySelectorAll('tr'));
+          const asc = th.dataset.order !== 'asc';
+          rows.sort((a, b) => {
+            const av = a.children[idx].dataset.sort || a.children[idx].innerText.trim();
+            const bv = b.children[idx].dataset.sort || b.children[idx].innerText.trim();
+            const an = parseFloat(av); const bn = parseFloat(bv);
+            if (!isNaN(an) && !isNaN(bn)) return asc ? an - bn : bn - an;
+            return asc ? av.localeCompare(bv) : bv.localeCompare(av);
+          });
+          th.dataset.order = asc ? 'asc' : 'desc';
+          rows.forEach(r => tbody.appendChild(r));
+        });
+      });
+    }
+
+    switchTab('24h');
+
+    async function fetchAllHistories() {
+      const statusEl = document.getElementById('bulk-status');
+      statusEl.textContent = 'Fetching...';
+      statusEl.classList.remove('text-danger','text-success');
+      statusEl.classList.add('text-primary');
+      const failures = [];
+      try {
+        const allModels = perf.all.models || [];
+        let done = 0;
+        const total = allModels.length;
+        for (const m of allModels) {
+          try {
+            statusEl.textContent = `Fetching ${++done}/${total}...`;
+            const res = await fetch(`/fetch-refreshes/${encodeURIComponent(m.workspace_id)}/${encodeURIComponent(m.model_id)}`, { method: 'POST' });
+            const data = await res.json();
+            if (!data.ok) throw new Error(data.message || 'Failed');
+          } catch (err) {
+            failures.push(`${m.model_name}`);
+            continue;
+          }
+        }
+        if (failures.length) {
+          statusEl.textContent = `Done with failures: ${failures.join(', ')}`;
+          statusEl.classList.remove('text-primary');
+          statusEl.classList.add('text-danger');
+        } else {
+          statusEl.textContent = 'All histories fetched';
+          statusEl.classList.remove('text-primary');
+          statusEl.classList.add('text-success');
+        }
+      } catch (err) {
+        statusEl.textContent = err.message;
+        statusEl.classList.remove('text-primary');
+        statusEl.classList.add('text-danger');
+      }
+    }
+
+    function renderHistoryLegend(rawDatasets, chartDatasets, legendEl) {
+      if (!legendEl) return;
+      const items = rawDatasets.map((d, i) => {
+        const color = chartDatasets[i]?.backgroundColor || '#999';
+        return `<span class="d-inline-flex align-items-center me-3 mb-2"><span style="display:inline-block;width:14px;height:14px;background:${color};margin-right:6px;border-radius:2px;"></span>${d.label}</span>`;
+      });
+      legendEl.innerHTML = `<div class="d-flex flex-wrap">${items.join('')}</div>`;
+    }
+  </script>
+{% endblock %}
